@@ -1,0 +1,37 @@
+[Unit]
+Description=madServerPowerManager monitor and power state manager
+After=network-online.target nut-server.service
+Wants=network-online.target nut-server.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=madspm
+Group=madspm
+WorkingDirectory=/var/lib/mad-server-power-manager
+ExecStart=/usr/local/bin/mad-server-power-manager
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=false
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/etc/mad-server-power-manager
+ReadWritePaths=/var/lib/mad-server-power-manager
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mad-server-power-manager
+
+[Install]
+WantedBy=multi-user.target

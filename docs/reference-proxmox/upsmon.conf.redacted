@@ -1,0 +1,6 @@
+MONITOR ups@localhost 1 madmentat <redacted> master
+POWERDOWNFLAG /etc/killpower
+SHUTDOWNCMD "/sbin/shutdown -h now"
+NOTIFYCMD /usr/local/sbin/nut-ob-timer.sh
+NOTIFYFLAG ONBATT SYSLOG+EXEC
+NOTIFYFLAG ONLINE SYSLOG+EXEC

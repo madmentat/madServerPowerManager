@@ -1,0 +1,6 @@
+/build/
+secrets.ini
+dev-secrets.ini
+dev.ini
+dev-state.json
+*.zip
