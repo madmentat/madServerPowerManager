@@ -4,7 +4,7 @@
 
 - `GET /api/v1/status`
 - `GET /api/v1/ups`
-- `GET /api/v1/proxmox`
+- `GET /api/v1/server`
 - `GET /api/v1/plug`
 - `GET /api/v1/events`
 - `GET /api/v1/health`
@@ -13,3 +13,6 @@
 `/api/v1/config` не возвращает ключ Tuya, SSH-ключ и API-токен. Все методы,
 кроме GET, возвращают `405`; управляющий HTTP API в текущей версии отсутствует,
 даже если параметр `allow_control` будет ошибочно включён.
+
+`GET /api/v1/proxmox` временно сохранён как deprecated-алиас для старых
+клиентов и возвращает тот же ответ, что `/api/v1/server`.

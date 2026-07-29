@@ -1,7 +1,7 @@
 #include "madspm/manager.hpp"
 
 #include "madspm/nut_client.hpp"
-#include "madspm/proxmox.hpp"
+#include "madspm/server_client.hpp"
 #include "madspm/state_machine.hpp"
 #include "madspm/tuya_client.hpp"
 
@@ -50,9 +50,8 @@ PowerManager::PowerManager(Config config)
 Observations PowerManager::observe() {
     Observations result;
     result.ups = NutClient(config_.ups).read();
-    ProxmoxClient proxmox(config_.proxmox);
-    result.proxmox_reachable = proxmox.reachable();
-    result.proxmox_confirmed_off = false;
+    ServerClient server(config_.server);
+    result.server_reachable = server.reachable();
     try {
         if (!config_.secrets.tuya_device_id.empty() &&
             !config_.secrets.tuya_local_key.empty()) {
@@ -69,11 +68,15 @@ Observations PowerManager::observe() {
     return result;
 }
 
-void PowerManager::apply_decision(const Decision& decision, bool dry_run) {
+bool PowerManager::apply_decision(const Decision& decision, bool dry_run) {
     const State previous = state_.state;
     if (decision.next != previous) {
         state_.state = decision.next;
         const auto now = utc_now_seconds();
+        if (decision.next == State::MonitorOnly) {
+            state_ = {};
+            state_.state = State::MonitorOnly;
+        }
         if (decision.next == State::OnBatteryGrace && state_.on_battery_since_utc == 0) {
             state_.on_battery_since_utc = now;
             state_.emergency_cycle_id = std::to_string(now);
@@ -82,74 +85,119 @@ void PowerManager::apply_decision(const Decision& decision, bool dry_run) {
             state_.mains_restored_since_utc == 0)
             state_.mains_restored_since_utc = now;
         if (decision.next == State::MainsOn &&
-            (previous == State::Recovery ||
-             (previous == State::MainsStabilizing && !state_.plug_was_cut))) {
+             (previous == State::Recovery ||
+             previous == State::Degraded ||
+             (previous == State::MainsStabilizing && !state_.plug_was_cut) ||
+             (previous == State::WaitingServerOff && !state_.plug_was_cut))) {
             state_ = {};
             state_.state = State::MainsOn;
-            state_.last_success_utc = now;
         }
         record_event("info", "fsm", "transition",
                      to_string(previous) + "->" + to_string(decision.next) +
                          ": " + decision.reason);
     }
-    if (decision.action == Action::None) return;
+    if (decision.action == Action::None)
+        return state_.state != State::Degraded && state_.state != State::Error &&
+               state_.last_error.empty();
     if (!config_.general.armed || dry_run) {
         record_event("info", "fsm", to_string(decision.action),
                      dry_run ? "dry-run" : "blocked: armed=false");
-        return;
+        return dry_run;
     }
 
     try {
         if (decision.action == Action::RequestShutdown) {
             std::string error;
             ++state_.shutdown_attempts;
-            if (ProxmoxClient(config_.proxmox).request_shutdown(error)) {
+            state_.shutdown_last_attempt_utc = utc_now_seconds();
+            if (ServerClient(config_.server).request_shutdown(error)) {
                 state_.shutdown_sent = true;
+                if (state_.shutdown_sent_utc == 0)
+                    state_.shutdown_sent_utc = state_.shutdown_last_attempt_utc;
+                state_.server_unreachable_since_utc = 0;
+                state_.server_confirmed_off = false;
                 state_.state = State::WaitingServerOff;
-                record_event("warning", "proxmox", "shutdown", "sent");
+                state_.last_error.clear();
+                record_event("warning", "server", "shutdown", "sent");
+                return true;
             } else {
                 state_.last_error = error;
-                record_event("error", "proxmox", "shutdown", error, "SSH_FAILED");
+                record_event("error", "server", "shutdown", error, "SSH_FAILED");
+                return false;
             }
         } else if (decision.action == Action::PlugOff) {
-            if (!observations_.proxmox_confirmed_off &&
-                !config_.proxmox.force_cut_after_shutdown_timeout) {
+            if (!observations_.server_confirmed_off &&
+                !config_.server.force_cut_after_shutdown_timeout) {
                 state_.state = State::Degraded;
-                state_.last_error = "Нет достаточного подтверждения выключения Proxmox";
+                state_.last_error =
+                    "Нет достаточного подтверждения выключения сервера";
                 record_event("error", "safety", "plug_off", "blocked",
                              "SERVER_OFF_UNCONFIRMED");
-            } else if (tuya::set_power(plug_config(config_), false)) {
+                return false;
+            }
+            ++state_.plug_attempts;
+            state_.plug_last_attempt_utc = utc_now_seconds();
+            if (tuya::set_power(plug_config(config_), false)) {
                 state_.plug_was_cut = true;
                 state_.plug_off_since_utc = utc_now_seconds();
                 state_.state = State::WaitingForMains;
+                state_.last_error.clear();
                 record_event("warning", "plug", "off", "confirmed");
+                return true;
             }
+            state_.last_error = "Розетка не подтвердила команду выключения";
+            record_event("error", "plug", "off", state_.last_error,
+                         "PLUG_COMMAND_REJECTED");
+            return false;
         } else if (decision.action == Action::PlugOn) {
             if (!observations_.ups.online) {
                 state_.state = State::Degraded;
                 state_.last_error = "Включение заблокировано: ИБП не подтверждает OL";
                 record_event("error", "safety", "plug_on", "blocked", "UPS_NOT_ONLINE");
-            } else if (tuya::set_power(plug_config(config_), true)) {
-                state_.state = State::Recovery;
-                record_event("warning", "plug", "on", "confirmed");
+                return false;
             }
+            ++state_.plug_attempts;
+            state_.plug_last_attempt_utc = utc_now_seconds();
+            if (tuya::set_power(plug_config(config_), true)) {
+                state_.state = State::Recovery;
+                state_.last_error.clear();
+                record_event("warning", "plug", "on", "confirmed");
+                return true;
+            }
+            state_.last_error = "Розетка не подтвердила команду включения";
+            record_event("error", "plug", "on", state_.last_error,
+                         "PLUG_COMMAND_REJECTED");
+            return false;
         }
     } catch (const std::exception& error) {
-        state_.state = State::Degraded;
         state_.last_error = error.what();
+        if (decision.action != Action::PlugOff &&
+            decision.action != Action::PlugOn)
+            state_.state = State::Degraded;
         record_event("error", "action", to_string(decision.action), error.what(),
                      "ACTION_FAILED");
+        return false;
     }
+    return false;
 }
 
 int PowerManager::run_once(bool dry_run) {
-    const Observations current = observe();
-    const Decision decision =
-        StateMachine(config_).evaluate(state_, current, utc_now_seconds());
+    Observations current = observe();
+    const auto now = utc_now_seconds();
+    StateMachine state_machine(config_);
     {
         std::lock_guard lock(mutex_);
-        apply_decision(decision, dry_run);
-        state_.last_success_utc = utc_now_seconds();
+        state_machine.update_on_battery_detection(state_, current, now);
+        state_machine.update_server_off_confirmation(state_, current, now);
+        observations_ = current;
+    }
+    const Decision decision = state_machine.evaluate(state_, current, now);
+    {
+        std::lock_guard lock(mutex_);
+        const bool succeeded = apply_decision(decision, dry_run);
+        if (succeeded && state_.state != State::Degraded &&
+            state_.state != State::Error)
+            state_.last_success_utc = utc_now_seconds();
         store_.save(state_);
     }
     return current.ups.reachable ? 0 : 1;
@@ -207,8 +255,10 @@ std::string PowerManager::status_json() const {
         << optional_number(observations_.ups.battery_runtime_seconds)
         << ",\"load_percent\":" << optional_number(observations_.ups.load_percent)
         << ",\"input_voltage\":" << optional_number(observations_.ups.input_voltage)
-        << ",\"proxmox_reachable\":"
-        << (observations_.proxmox_reachable ? "true" : "false")
+        << ",\"server_reachable\":"
+        << (observations_.server_reachable ? "true" : "false")
+        << ",\"server_confirmed_off\":"
+        << (observations_.server_confirmed_off ? "true" : "false")
         << ",\"plug_reachable\":" << (observations_.plug_reachable ? "true" : "false")
         << ",\"plug_on\":";
     if (observations_.plug_on) out << (*observations_.plug_on ? "true" : "false");
@@ -234,11 +284,11 @@ std::string PowerManager::ups_json() const {
     return out.str();
 }
 
-std::string PowerManager::proxmox_json() const {
+std::string PowerManager::server_json() const {
     std::lock_guard lock(mutex_);
-    return std::string("{\"host\":\"") + json_escape(config_.proxmox.host) +
+    return std::string("{\"host\":\"") + json_escape(config_.server.host) +
            "\",\"reachable\":" +
-           (observations_.proxmox_reachable ? "true}" : "false}");
+           (observations_.server_reachable ? "true}" : "false}");
 }
 
 std::string PowerManager::plug_json() const {
@@ -256,7 +306,7 @@ std::string PowerManager::config_json() const {
         << ",\"poll_interval_seconds\":" << config_.general.poll_interval_seconds
         << ",\"nut_host\":\"" << json_escape(config_.ups.host)
         << "\",\"nut_name\":\"" << json_escape(config_.ups.name)
-        << "\",\"proxmox_host\":\"" << json_escape(config_.proxmox.host)
+        << "\",\"server_host\":\"" << json_escape(config_.server.host)
         << "\",\"plug_host\":\"" << json_escape(config_.plug.host)
         << "\",\"api_listen\":\"" << json_escape(config_.api.listen_address)
         << "\",\"api_port\":" << config_.api.port

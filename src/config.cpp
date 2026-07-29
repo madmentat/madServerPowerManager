@@ -1,5 +1,6 @@
 #include "madspm/config.hpp"
 
+#include <arpa/inet.h>
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -68,6 +69,13 @@ void verify_secret_permissions(const std::filesystem::path& path) {
     }
 }
 
+bool numeric_ip_address(const std::string& value) {
+    in_addr ipv4 {};
+    in6_addr ipv6 {};
+    return ::inet_pton(AF_INET, value.c_str(), &ipv4) == 1 ||
+           ::inet_pton(AF_INET6, value.c_str(), &ipv6) == 1;
+}
+
 } // namespace
 
 std::map<std::string, std::string> ConfigLoader::parse_ini(
@@ -100,9 +108,29 @@ std::map<std::string, std::string> ConfigLoader::parse_ini(
 }
 
 Config ConfigLoader::load(const std::filesystem::path& path, bool require_secrets) {
-    const auto values = parse_ini(path);
+    auto values = parse_ini(path);
     Config config;
     config.source_path = path;
+    bool has_server_section = false;
+    bool has_legacy_proxmox_section = false;
+    std::vector<std::pair<std::string, std::string>> legacy_server_values;
+    for (const auto& [key, value] : values) {
+        if (key.rfind("server.", 0) == 0) has_server_section = true;
+        if (key.rfind("proxmox.", 0) == 0) {
+            has_legacy_proxmox_section = true;
+            legacy_server_values.emplace_back(
+                "server." + key.substr(std::string("proxmox.").size()), value);
+        }
+    }
+    if (has_server_section && has_legacy_proxmox_section)
+        throw std::runtime_error(
+            "Нельзя одновременно использовать секции [server] и [proxmox]");
+    if (has_legacy_proxmox_section) {
+        for (const auto& [key, value] : legacy_server_values)
+            values.emplace(key, value);
+        config.warnings.push_back(
+            "Секция [proxmox] устарела; переименуйте её в [server]");
+    }
     config.general.armed = boolean(values, "general.armed", false);
     config.general.poll_interval_seconds =
         number(values, "general.poll_interval_seconds", 5);
@@ -126,28 +154,32 @@ Config ConfigLoader::load(const std::filesystem::path& path, bool require_secret
     config.ups.use_low_battery_flag =
         boolean(values, "ups.use_low_battery_flag", true);
 
-    config.proxmox.host = text(values, "proxmox.host", config.proxmox.host);
-    config.proxmox.port =
-        static_cast<std::uint16_t>(number(values, "proxmox.port", config.proxmox.port));
-    config.proxmox.user = text(values, "proxmox.user", config.proxmox.user);
-    config.proxmox.private_key =
-        text(values, "proxmox.private_key", config.proxmox.private_key.string());
-    config.proxmox.known_hosts =
-        text(values, "proxmox.known_hosts", config.proxmox.known_hosts.string());
-    config.proxmox.connect_timeout_seconds =
-        number(values, "proxmox.connect_timeout_seconds", 5);
-    config.proxmox.shutdown_grace_seconds =
-        number(values, "proxmox.shutdown_grace_seconds", 480);
-    config.proxmox.shutdown_timeout_seconds =
-        number(values, "proxmox.shutdown_timeout_seconds", 360);
-    config.proxmox.shutdown_retry_seconds =
-        number(values, "proxmox.shutdown_retry_seconds", 20);
-    config.proxmox.shutdown_max_attempts =
-        number(values, "proxmox.shutdown_max_attempts", 5);
-    config.proxmox.force_cut_after_shutdown_timeout =
-        boolean(values, "proxmox.force_cut_after_shutdown_timeout", false);
-    config.proxmox.forced_command =
-        text(values, "proxmox.forced_command", config.proxmox.forced_command);
+    config.server.host = text(values, "server.host", config.server.host);
+    config.server.port =
+        static_cast<std::uint16_t>(number(values, "server.port", config.server.port));
+    config.server.user = text(values, "server.user", config.server.user);
+    config.server.private_key =
+        text(values, "server.private_key", config.server.private_key.string());
+    config.server.known_hosts =
+        text(values, "server.known_hosts", config.server.known_hosts.string());
+    config.server.connect_timeout_seconds =
+        number(values, "server.connect_timeout_seconds", 5);
+    config.server.command_timeout_seconds =
+        number(values, "server.command_timeout_seconds", 15);
+    config.server.shutdown_grace_seconds =
+        number(values, "server.shutdown_grace_seconds", 480);
+    config.server.shutdown_timeout_seconds =
+        number(values, "server.shutdown_timeout_seconds", 300);
+    config.server.server_off_confirm_seconds =
+        number(values, "server.server_off_confirm_seconds", 30);
+    config.server.shutdown_retry_seconds =
+        number(values, "server.shutdown_retry_seconds", 20);
+    config.server.shutdown_max_attempts =
+        number(values, "server.shutdown_max_attempts", 5);
+    config.server.force_cut_after_shutdown_timeout =
+        boolean(values, "server.force_cut_after_shutdown_timeout", false);
+    config.server.forced_command =
+        text(values, "server.forced_command", config.server.forced_command);
 
     config.plug.host = text(values, "plug.host", config.plug.host);
     config.plug.port =
@@ -170,10 +202,20 @@ Config ConfigLoader::load(const std::filesystem::path& path, bool require_secret
         "general.state_file", "general.secrets_file", "ups.nut_host", "ups.nut_port",
         "ups.nut_name", "ups.on_battery_confirm_seconds", "ups.grace_seconds",
         "ups.mains_stable_seconds", "ups.critical_battery_charge",
-        "ups.critical_runtime_seconds", "ups.use_low_battery_flag", "proxmox.host",
+        "ups.critical_runtime_seconds", "ups.use_low_battery_flag", "server.host",
+        "server.port", "server.user", "server.private_key",
+        "server.known_hosts", "server.connect_timeout_seconds",
+        "server.command_timeout_seconds",
+        "server.shutdown_grace_seconds", "server.shutdown_timeout_seconds",
+        "server.server_off_confirm_seconds",
+        "server.shutdown_retry_seconds", "server.shutdown_max_attempts",
+        "server.force_cut_after_shutdown_timeout", "server.forced_command",
+        "proxmox.host",
         "proxmox.port", "proxmox.user", "proxmox.private_key",
         "proxmox.known_hosts", "proxmox.connect_timeout_seconds",
+        "proxmox.command_timeout_seconds",
         "proxmox.shutdown_grace_seconds", "proxmox.shutdown_timeout_seconds",
+        "proxmox.server_off_confirm_seconds",
         "proxmox.shutdown_retry_seconds", "proxmox.shutdown_max_attempts",
         "proxmox.force_cut_after_shutdown_timeout", "proxmox.forced_command",
         "plug.host", "plug.port", "plug.protocol_version", "plug.switch_dp",
@@ -202,10 +244,27 @@ void ConfigLoader::validate(const Config& config, bool for_armed_mode) {
         throw std::runtime_error("poll_interval_seconds должен быть больше нуля");
     if (config.ups.grace_seconds < config.ups.on_battery_confirm_seconds)
         throw std::runtime_error("grace_seconds меньше времени подтверждения батареи");
-    if (config.proxmox.shutdown_timeout_seconds < 360)
-        throw std::runtime_error("shutdown_timeout_seconds должен быть не менее 360");
+    if (config.server.shutdown_timeout_seconds < 300)
+        throw std::runtime_error("shutdown_timeout_seconds должен быть не менее 300");
+    if (config.server.server_off_confirm_seconds <
+        config.general.poll_interval_seconds * 3)
+        throw std::runtime_error(
+            "server_off_confirm_seconds должен включать минимум три опроса");
+    if (config.server.server_off_confirm_seconds >
+        config.server.shutdown_timeout_seconds)
+        throw std::runtime_error(
+            "server_off_confirm_seconds больше shutdown_timeout_seconds");
+    if (config.server.command_timeout_seconds == 0)
+        throw std::runtime_error("command_timeout_seconds должен быть больше нуля");
     if (config.plug.minimum_off_seconds < 20)
         throw std::runtime_error("minimum_off_seconds должен быть не менее 20");
+    if (config.plug.command_timeout_seconds == 0)
+        throw std::runtime_error("plug.command_timeout_seconds должен быть больше нуля");
+    if (config.plug.retry_seconds == 0)
+        throw std::runtime_error("plug.retry_seconds должен быть больше нуля");
+    if (config.plug.host.rfind("YOUR_", 0) != 0 &&
+        !numeric_ip_address(config.plug.host))
+        throw std::runtime_error("plug.host должен быть числовым IPv4/IPv6-адресом");
     if (config.api.allow_control && !config.api.enabled)
         throw std::runtime_error("allow_control требует включённый API");
     if (config.plug.protocol_version != "3.5")
@@ -214,10 +273,14 @@ void ConfigLoader::validate(const Config& config, bool for_armed_mode) {
         config.secrets.tuya_local_key.size() != 16)
         throw std::runtime_error("Tuya local_key должен содержать ровно 16 байт");
     if (for_armed_mode) {
+        if (config.server.host.rfind("YOUR_", 0) == 0 ||
+            config.plug.host.rfind("YOUR_", 0) == 0 ||
+            config.ups.host.rfind("YOUR_", 0) == 0)
+            throw std::runtime_error("armed=true запрещён с адресами-заполнителями");
         if (config.secrets.tuya_device_id.empty() || config.secrets.tuya_local_key.empty())
             throw std::runtime_error("armed=true запрещён без секретов Tuya");
-        if (!std::filesystem::exists(config.proxmox.private_key) ||
-            !std::filesystem::exists(config.proxmox.known_hosts))
+        if (!std::filesystem::exists(config.server.private_key) ||
+            !std::filesystem::exists(config.server.known_hosts))
             throw std::runtime_error("armed=true запрещён без SSH-ключа и known_hosts");
     }
 }

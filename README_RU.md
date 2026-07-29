@@ -1,6 +1,6 @@
 # madServerPowerManager
 
-Автономный менеджер питания Proxmox на C++20 для отдельного маломощного
+Автономный менеджер питания сервера на C++20 для отдельного маломощного
 Linux-узла — например, Intel NUC, Raspberry Pi, тонкого клиента, другого мини-ПК
 или одноплатного компьютера.
 
@@ -19,12 +19,12 @@ Linux-узла — например, Intel NUC, Raspberry Pi, тонкого к�
 
 Текущая стадия — рабочий билд. На реальном Intel NUC проверены сборка, NUT,
 локальное чтение Tuya 3.5, HTTP API, восстановление после рестарта и 27
-инвариантов машины состояний. Полный аварийный цикл с shutdown Proxmox,
+инвариантов машины состояний. Полный аварийный цикл с shutdown сервера,
 отключением и восстановлением розетки пройден успешно 28 июля 2026.
 
 ## Задача
 
-Если внешнее питание пропало ненадолго, Proxmox должен продолжить работу. Если
+Если внешнее питание пропало ненадолго, сервер должен продолжить работу. Если
 генератор не запустился за заданный grace period, сервер необходимо штатно
 выключить, подтвердить завершение работы и только затем снять с него питание.
 После устойчивого восстановления сети розетка включается, а BIOS запускает
@@ -41,7 +41,7 @@ Linux-узла — например, Intel NUC, Raspberry Pi, тонкого к�
                                 │
                     madServerPowerManager
                      ├── FSM и state.json
-                     ├── SSH ───────────► Proxmox
+                     ├── SSH ───────────► управляемый сервер
                      ├── Tuya 3.5 ──────► Wi-Fi-розетка
                      └── HTTP JSON API ─► локальный мониторинг
 ```
@@ -51,7 +51,7 @@ Linux-узла — например, Intel NUC, Raspberry Pi, тонкого к�
 - локальный опрос ИБП через Network UPS Tools;
 - нативный клиент Tuya 3.5 без Python, TinyTuya и облачного API;
 - HMAC-SHA256, SHA-256, AES-128 и AES-GCM для локального протокола Tuya;
-- штатный shutdown Proxmox через системный OpenSSH;
+- штатный shutdown управляемого Linux-сервера через системный OpenSSH;
 - конечная машина состояний с фильтрацией кратких пропаданий сети;
 - продолжение незавершённого аварийного цикла после рестарта;
 - атомарная запись состояния: временный файл, `fsync`, `rename`;
@@ -104,7 +104,7 @@ STARTING
 - потоки POSIX;
 - системный OpenSSH-клиент;
 - работающий NUT-сервер;
-- локальный сетевой доступ к Proxmox и Tuya-розетке.
+- локальный сетевой доступ к управляемому серверу и Tuya-розетке.
 
 Python, pip, TinyTuya, Tuya Cloud и доступ в интернет во время работы не
 требуются.
@@ -126,7 +126,8 @@ ctest --test-dir build --output-on-failure
 
 - `mad-server-power-manager` — основной демон и CLI;
 - `plugctl` — отдельный диагностический инструмент Tuya;
-- `madspm-tests` — тесты FSM при `BUILD_TESTING=ON`.
+- `madspm-test-*` — тесты FSM, StateStore, конфигурации, NUT, SSH-сервера,
+  HTTP API и менеджера при `BUILD_TESTING=ON`.
 
 ## Конфигурация
 
@@ -140,7 +141,7 @@ state_file=/var/lib/mad-server-power-manager/state.json
 secrets_file=/etc/mad-server-power-manager/secrets.ini
 
 [ups]
-nut_host=127.0.0.1
+nut_host=YOUR_NUT_HOST
 nut_port=3493
 nut_name=ups
 on_battery_confirm_seconds=10
@@ -148,17 +149,19 @@ grace_seconds=480
 mains_stable_seconds=60
 critical_battery_charge=15
 
-[proxmox]
-host=192.168.1.20
+[server]
+host=YOUR_SERVER_HOST
 port=22
 user=mad-power-manager
 private_key=/etc/mad-server-power-manager/id_ed25519
 known_hosts=/etc/mad-server-power-manager/known_hosts
-shutdown_timeout_seconds=360
+command_timeout_seconds=15
+shutdown_timeout_seconds=300
+server_off_confirm_seconds=30
 force_cut_after_shutdown_timeout=false
 
 [plug]
-host=192.168.1.30
+host=YOUR_TUYA_PLUG_HOST
 port=6668
 protocol_version=3.5
 switch_dp=1
@@ -170,6 +173,11 @@ listen_address=127.0.0.1
 port=9187
 allow_control=false
 ```
+
+Секция `[server]` описывает любой Linux-сервер, который принимает безопасные
+команды `status` и `poweroff` через ограниченный SSH forced command. Никаких
+Proxmox API программа не использует. Старая секция `[proxmox]` временно
+принимается с предупреждением для совместимости.
 
 Секреты хранятся в отдельном файле:
 
@@ -215,6 +223,18 @@ sudo mad-server-power-manager --doctor
 sudo systemctl enable --now mad-server-power-manager
 ```
 
+Установщик оставляет сервис в безопасном режиме. SSH-ключ, проверенный
+`known_hosts`, ограниченного пользователя и forced command на сервере создаёт
+интерактивный provisioning:
+
+```bash
+sudo ./scripts/provision-server-ssh.sh YOUR_SERVER_HOST
+```
+
+Перед записью `known_hosts` скрипт показывает fingerprints и требует явного
+`yes`. Проверочная команда — только `status`; `poweroff` при provisioning не
+запускается.
+
 Проверка сервиса:
 
 ```bash
@@ -229,7 +249,7 @@ curl http://127.0.0.1:9187/api/v1/health
 sudo ./scripts/uninstall.sh
 ```
 
-Перед запуском `scripts/migrate-nut-from-proxmox.sh` ознакомьтесь с его
+Перед запуском `scripts/migrate-nut-from-server.sh` ознакомьтесь с его
 содержимым и сделайте резервную копию активной конфигурации NUT.
 
 ## CLI
@@ -263,11 +283,14 @@ sudo ./scripts/uninstall.sh
 |-------|----------|------------|
 | GET | `/api/v1/status` | Сводный статус |
 | GET | `/api/v1/ups` | Телеметрия ИБП |
-| GET | `/api/v1/proxmox` | Доступность Proxmox |
+| GET | `/api/v1/server` | Доступность управляемого сервера |
 | GET | `/api/v1/plug` | Состояние розетки |
 | GET | `/api/v1/events` | Последние события |
 | GET | `/api/v1/health` | Health check |
 | GET | `/api/v1/config` | Санитизированная конфигурация |
+
+Старый путь `/api/v1/proxmox` временно является deprecated-алиасом
+`/api/v1/server`.
 
 Любой метод кроме `GET` возвращает `405`. Версия `1.0.0` не предоставляет
 управляющего API, даже если `allow_control` случайно включён.
@@ -278,8 +301,9 @@ sudo ./scripts/uninstall.sh
 - демон никогда не включает `armed` самостоятельно;
 - секреты отделены от основной конфигурации;
 - SSH использует отдельный ключ, `known_hosts` и `PasswordAuthentication=no`;
-- на Proxmox желательно выделить отдельного пользователя с forced command;
-- один закрытый порт SSH не считается доказательством выключения сервера;
+- на управляемом сервере следует выделить отдельного пользователя с forced command;
+- выключение подтверждается только после принятого shutdown и непрерывной
+  недоступности SSH в течение `server_off_confirm_seconds`;
 - `force_cut_after_shutdown_timeout=false` предотвращает слепое снятие питания;
 - API доступен только на loopback и только на чтение;
 - systemd-сервис работает от непривилегированного пользователя.
@@ -303,7 +327,7 @@ sudo ./scripts/uninstall.sh
 ```
 include/madspm/   публичные C++-интерфейсы
 src/              демон, FSM, NUT, SSH, Tuya и реализация API
-tests/            тесты машины состояний
+tests/            модульные и интеграционные тесты компонентов
 config/           безопасные шаблоны конфигурации
 systemd/          systemd-юнит
 scripts/          скрипты установки, удаления и миграции NUT
@@ -326,8 +350,9 @@ docs/             архитектура, API, эксплуатация, отч�
 
 ## Известные ограничения
 
-- production SSH forced command ещё не введена в строй;
-- Proxmox ещё не переведён в NUT netclient;
+- SSH provisioning требует доступ администратора сервера и ручную проверку
+  fingerprint;
+- управляемый сервер ещё не переведён в NUT netclient;
 - ИБП не сообщает `battery.runtime`;
 - HTTP API поддерживает только IPv4 и локальный мониторинг;
 - полный физический аварийный цикл пройден 28 июля 2026;

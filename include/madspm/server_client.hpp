@@ -6,15 +6,15 @@
 
 namespace madspm {
 
-class ProxmoxClient {
+class ServerClient {
 public:
-    explicit ProxmoxClient(ProxmoxConfig config);
+    explicit ServerClient(ServerConfig config);
     bool reachable() const;
     bool request_shutdown(std::string& error) const;
     bool test_ssh(std::string& error) const;
 
 private:
-    ProxmoxConfig config_;
+    ServerConfig config_;
     bool run_ssh(const std::string& command, std::string& error) const;
 };
 

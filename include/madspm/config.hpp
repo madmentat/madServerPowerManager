@@ -28,15 +28,17 @@ struct UpsConfig {
     bool use_low_battery_flag = true;
 };
 
-struct ProxmoxConfig {
-    std::string host = "192.168.88.45";
+struct ServerConfig {
+    std::string host = "YOUR_SERVER_HOST";
     std::uint16_t port = 22;
     std::string user = "mad-power-manager";
     std::filesystem::path private_key = "/etc/mad-server-power-manager/id_ed25519";
     std::filesystem::path known_hosts = "/etc/mad-server-power-manager/known_hosts";
     unsigned connect_timeout_seconds = 5;
+    unsigned command_timeout_seconds = 15;
     unsigned shutdown_grace_seconds = 480;
-    unsigned shutdown_timeout_seconds = 360;
+    unsigned shutdown_timeout_seconds = 300;
+    unsigned server_off_confirm_seconds = 30;
     unsigned shutdown_retry_seconds = 20;
     unsigned shutdown_max_attempts = 5;
     bool force_cut_after_shutdown_timeout = false;
@@ -44,7 +46,7 @@ struct ProxmoxConfig {
 };
 
 struct PlugConfig {
-    std::string host = "192.168.88.73";
+    std::string host = "YOUR_TUYA_PLUG_HOST";
     std::uint16_t port = 6668;
     std::string protocol_version = "3.5";
     int switch_dp = 1;
@@ -69,7 +71,7 @@ struct Secrets {
 struct Config {
     GeneralConfig general;
     UpsConfig ups;
-    ProxmoxConfig proxmox;
+    ServerConfig server;
     PlugConfig plug;
     ApiConfig api;
     Secrets secrets;

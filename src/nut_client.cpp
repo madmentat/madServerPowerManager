@@ -53,6 +53,51 @@ std::optional<double> numeric(const std::map<std::string, std::string>& values,
 
 NutClient::NutClient(UpsConfig config) : config_(std::move(config)) {}
 
+std::map<std::string, std::string> NutClient::parse_variables_response(
+    const std::string& buffer, const std::string& ups_name) {
+    if (buffer.rfind("ERR ", 0) == 0)
+        throw std::runtime_error("NUT: " + buffer);
+    std::map<std::string, std::string> result;
+    std::size_t offset = 0;
+    while (offset < buffer.size()) {
+        const auto newline = buffer.find('\n', offset);
+        std::string line = buffer.substr(offset, newline - offset);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        offset = newline == std::string::npos ? buffer.size() : newline + 1;
+        const std::string prefix = "VAR " + ups_name + " ";
+        if (line.rfind(prefix, 0) != 0) continue;
+        const std::size_t name_end = line.find(' ', prefix.size());
+        if (name_end == std::string::npos) continue;
+        result[line.substr(prefix.size(), name_end - prefix.size())] =
+            unquote(line.substr(name_end + 1));
+    }
+    if (result.empty()) throw std::runtime_error("NUT: список переменных пуст");
+    return result;
+}
+
+UpsTelemetry NutClient::telemetry_from_variables(
+    std::map<std::string, std::string> variables) {
+    UpsTelemetry result;
+    result.variables = std::move(variables);
+    const auto it = result.variables.find("ups.status");
+    if (it == result.variables.end())
+        throw std::runtime_error("NUT не вернул ups.status");
+    result.reachable = true;
+    result.status = it->second;
+    result.online = result.status.find("OL") != std::string::npos;
+    result.on_battery = result.status.find("OB") != std::string::npos;
+    result.low_battery = result.status.find("LB") != std::string::npos;
+    result.battery_charge = numeric(result.variables, "battery.charge");
+    result.battery_runtime_seconds = numeric(result.variables, "battery.runtime");
+    result.battery_voltage = numeric(result.variables, "battery.voltage");
+    result.load_percent = numeric(result.variables, "ups.load");
+    result.input_voltage = numeric(result.variables, "input.voltage");
+    result.input_frequency = numeric(result.variables, "input.frequency");
+    result.output_voltage = numeric(result.variables, "output.voltage");
+    result.temperature = numeric(result.variables, "ups.temperature");
+    return result;
+}
+
 std::map<std::string, std::string> NutClient::query_variables() const {
     addrinfo hints {};
     hints.ai_family = AF_UNSPEC;
@@ -89,44 +134,13 @@ std::map<std::string, std::string> NutClient::query_variables() const {
             buffer.find("ERR ") != std::string::npos) break;
         if (buffer.size() > 1024 * 1024) throw std::runtime_error("NUT: слишком большой ответ");
     }
-    if (buffer.rfind("ERR ", 0) == 0) throw std::runtime_error("NUT: " + buffer);
-    std::map<std::string, std::string> result;
-    std::size_t offset = 0;
-    while (offset < buffer.size()) {
-        const auto newline = buffer.find('\n', offset);
-        const std::string line = buffer.substr(offset, newline - offset);
-        offset = newline == std::string::npos ? buffer.size() : newline + 1;
-        const std::string prefix = "VAR " + config_.name + " ";
-        if (line.rfind(prefix, 0) != 0) continue;
-        const std::size_t name_end = line.find(' ', prefix.size());
-        if (name_end == std::string::npos) continue;
-        result[line.substr(prefix.size(), name_end - prefix.size())] =
-            unquote(line.substr(name_end + 1));
-    }
-    if (result.empty()) throw std::runtime_error("NUT: список переменных пуст");
-    return result;
+    return parse_variables_response(buffer, config_.name);
 }
 
 UpsTelemetry NutClient::read() const {
     UpsTelemetry result;
     try {
-        result.variables = query_variables();
-        result.reachable = true;
-        const auto it = result.variables.find("ups.status");
-        if (it == result.variables.end())
-            throw std::runtime_error("NUT не вернул ups.status");
-        result.status = it->second;
-        result.online = result.status.find("OL") != std::string::npos;
-        result.on_battery = result.status.find("OB") != std::string::npos;
-        result.low_battery = result.status.find("LB") != std::string::npos;
-        result.battery_charge = numeric(result.variables, "battery.charge");
-        result.battery_runtime_seconds = numeric(result.variables, "battery.runtime");
-        result.battery_voltage = numeric(result.variables, "battery.voltage");
-        result.load_percent = numeric(result.variables, "ups.load");
-        result.input_voltage = numeric(result.variables, "input.voltage");
-        result.input_frequency = numeric(result.variables, "input.frequency");
-        result.output_voltage = numeric(result.variables, "output.voltage");
-        result.temperature = numeric(result.variables, "ups.temperature");
+        result = telemetry_from_variables(query_variables());
     } catch (const std::exception& error) {
         result.error = error.what();
     }

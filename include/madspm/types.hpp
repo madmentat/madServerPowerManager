@@ -52,8 +52,8 @@ struct UpsTelemetry {
 
 struct Observations {
     UpsTelemetry ups;
-    bool proxmox_reachable = false;
-    bool proxmox_confirmed_off = false;
+    bool server_reachable = false;
+    bool server_confirmed_off = false;
     bool plug_reachable = false;
     std::optional<bool> plug_on;
 };
@@ -63,11 +63,17 @@ struct PersistentState {
     State state = State::Starting;
     std::string emergency_cycle_id;
     std::int64_t on_battery_since_utc = 0;
+    std::int64_t on_battery_detected_since_utc = 0;
     std::int64_t mains_restored_since_utc = 0;
     std::int64_t plug_off_since_utc = 0;
     bool shutdown_sent = false;
     unsigned shutdown_attempts = 0;
+    std::int64_t shutdown_sent_utc = 0;
+    std::int64_t shutdown_last_attempt_utc = 0;
+    std::int64_t server_unreachable_since_utc = 0;
     bool server_confirmed_off = false;
+    std::int64_t plug_last_attempt_utc = 0;
+    unsigned plug_attempts = 0;
     bool plug_was_cut = false;
     std::string last_error;
     std::int64_t last_success_utc = 0;

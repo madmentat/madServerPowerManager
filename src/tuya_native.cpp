@@ -576,11 +576,8 @@ std::vector<std::uint8_t> make_control_payload(int dps, bool state) {
          << ",\"data\":{\"dps\":{\"" << dps << "\":"
          << (state ? "true" : "false") << "}}}";
     const std::string json_text = json.str();
-    std::vector<std::uint8_t> payload;
+    std::vector<std::uint8_t> payload = {'3', '.', '5'};
     payload.reserve(15 + json_text.size());
-    payload.push_back('3');
-    payload.push_back('.');
-    payload.push_back('5');
     payload.insert(payload.end(), 12, 0);
     payload.insert(payload.end(), json_text.begin(), json_text.end());
     return payload;
@@ -670,15 +667,15 @@ bool send_switch_command(int fd,
                          bool state,
                          bool debug) {
     send_all(fd, pack_frame(sequence++, kCmdControlNew, make_control_payload(dps, state), session_key, debug));
-    for (int i = 0; i < 3; ++i) {
-        Frame frame = receive_frame(fd, session_key, debug);
-        if (frame.retcode != 0) {
-            throw std::runtime_error("Розетка отклонила команду, retcode=" + std::to_string(frame.retcode));
-        }
-        // Даже пустой GCM-кадр является валидным ACK. Дополнительный статус проверим отдельной командой.
-        return true;
+    Frame frame = receive_frame(fd, session_key, debug);
+    if (frame.retcode != 0) {
+        throw std::runtime_error(
+            "Розетка отклонила команду, retcode=" +
+            std::to_string(frame.retcode));
     }
-    return false;
+    // Даже пустой GCM-кадр является валидным ACK. Дополнительный статус
+    // проверяется отдельной командой.
+    return true;
 }
 
 int run_device_action(const Config& config, Action action, bool debug) {
@@ -733,7 +730,6 @@ int run_device_action(const Config& config, Action action, bool debug) {
 
 } // namespace
 
-#ifdef MADSPM_TUYA_LIBRARY
 namespace madspm::tuya {
 
 namespace {
@@ -781,9 +777,7 @@ bool self_test(std::string& error) {
     return crypto::run_self_tests(error);
 }
 
-} // namespace madspm::tuya
-#else
-int main(int argc, char** argv) {
+int run_cli(int argc, char** argv) {
     std::signal(SIGPIPE, SIG_IGN);
     try {
         const Options options = parse_options(argc, argv);
@@ -813,4 +807,5 @@ int main(int argc, char** argv) {
         return 1;
     }
 }
-#endif
+
+} // namespace madspm::tuya

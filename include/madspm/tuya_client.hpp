@@ -18,5 +18,6 @@ struct ClientConfig {
 std::optional<bool> status(const ClientConfig& config, bool debug = false);
 bool set_power(const ClientConfig& config, bool desired, bool debug = false);
 bool self_test(std::string& error);
+int run_cli(int argc, char** argv);
 
 } // namespace madspm::tuya

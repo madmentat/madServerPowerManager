@@ -1,4 +1,4 @@
-#include "madspm/proxmox.hpp"
+#include "madspm/server_client.hpp"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -6,6 +6,9 @@
 #include <memory>
 #include <netdb.h>
 #include <poll.h>
+#include <signal.h>
+#include <chrono>
+#include <thread>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -13,9 +16,9 @@
 
 namespace madspm {
 
-ProxmoxClient::ProxmoxClient(ProxmoxConfig config) : config_(std::move(config)) {}
+ServerClient::ServerClient(ServerConfig config) : config_(std::move(config)) {}
 
-bool ProxmoxClient::reachable() const {
+bool ServerClient::reachable() const {
     addrinfo hints {};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -41,10 +44,11 @@ bool ProxmoxClient::reachable() const {
     return false;
 }
 
-bool ProxmoxClient::run_ssh(const std::string& command, std::string& error) const {
+bool ServerClient::run_ssh(const std::string& command, std::string& error) const {
     const pid_t pid = ::fork();
     if (pid < 0) { error = std::strerror(errno); return false; }
     if (pid == 0) {
+        if (::setsid() < 0) _exit(126);
         const std::string destination = config_.user + "@" + config_.host;
         const std::string port = std::to_string(config_.port);
         const std::string timeout = "ConnectTimeout=" +
@@ -64,18 +68,48 @@ bool ProxmoxClient::run_ssh(const std::string& command, std::string& error) cons
         _exit(127);
     }
     int status = 0;
-    if (::waitpid(pid, &status, 0) < 0) { error = std::strerror(errno); return false; }
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(config_.command_timeout_seconds);
+    for (;;) {
+        const pid_t result = ::waitpid(pid, &status, WNOHANG);
+        if (result == pid) break;
+        if (result < 0) {
+            if (errno == EINTR) continue;
+            error = std::strerror(errno);
+            return false;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            ::kill(-pid, SIGTERM);
+            const auto terminate_deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds(1);
+            while (std::chrono::steady_clock::now() < terminate_deadline) {
+                const pid_t terminated = ::waitpid(pid, &status, WNOHANG);
+                if (terminated == pid) {
+                    error = "ssh timeout after " +
+                            std::to_string(config_.command_timeout_seconds) + "s";
+                    return false;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+            ::kill(-pid, SIGKILL);
+            while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+            error = "ssh timeout after " +
+                    std::to_string(config_.command_timeout_seconds) + "s";
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) return true;
     error = WIFEXITED(status) ? "ssh exit=" + std::to_string(WEXITSTATUS(status))
                              : "ssh завершён сигналом";
     return false;
 }
 
-bool ProxmoxClient::request_shutdown(std::string& error) const {
+bool ServerClient::request_shutdown(std::string& error) const {
     return run_ssh(config_.forced_command, error);
 }
 
-bool ProxmoxClient::test_ssh(std::string& error) const {
+bool ServerClient::test_ssh(std::string& error) const {
     return run_ssh("status", error);
 }
 

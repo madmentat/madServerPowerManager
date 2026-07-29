@@ -8,6 +8,22 @@
 
 namespace madspm {
 
+HttpResponse route_http_request(PowerManager& manager,
+                                const std::string& method,
+                                const std::string& path) {
+    if (method != "GET")
+        return {"405 Method Not Allowed", "{\"error\":\"control API disabled\"}"};
+    if (path == "/api/v1/status") return {"200 OK", manager.status_json()};
+    if (path == "/api/v1/ups") return {"200 OK", manager.ups_json()};
+    if (path == "/api/v1/server" || path == "/api/v1/proxmox")
+        return {"200 OK", manager.server_json()};
+    if (path == "/api/v1/plug") return {"200 OK", manager.plug_json()};
+    if (path == "/api/v1/events") return {"200 OK", manager.events_json()};
+    if (path == "/api/v1/health") return {"200 OK", manager.health_json()};
+    if (path == "/api/v1/config") return {"200 OK", manager.config_json()};
+    return {"404 Not Found", "{\"error\":\"not found\"}"};
+}
+
 HttpApi::HttpApi(PowerManager& manager) : manager_(manager) {}
 HttpApi::~HttpApi() { stop(); }
 
@@ -58,26 +74,11 @@ void HttpApi::serve() {
             first_space == std::string::npos || second_space == std::string::npos
                 ? ""
                 : request.substr(first_space + 1, second_space - first_space - 1);
-        std::string body;
-        std::string status = "200 OK";
-        if (method != "GET") {
-            status = "405 Method Not Allowed";
-            body = "{\"error\":\"control API disabled\"}";
-        } else if (path == "/api/v1/status") body = manager_.status_json();
-        else if (path == "/api/v1/ups") body = manager_.ups_json();
-        else if (path == "/api/v1/proxmox") body = manager_.proxmox_json();
-        else if (path == "/api/v1/plug") body = manager_.plug_json();
-        else if (path == "/api/v1/events") body = manager_.events_json();
-        else if (path == "/api/v1/health") body = manager_.health_json();
-        else if (path == "/api/v1/config") body = manager_.config_json();
-        else {
-            status = "404 Not Found";
-            body = "{\"error\":\"not found\"}";
-        }
+        const HttpResponse routed = route_http_request(manager_, method, path);
         const std::string response =
-            "HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\n"
+            "HTTP/1.1 " + routed.status + "\r\nContent-Type: application/json\r\n"
             "Cache-Control: no-store\r\nConnection: close\r\nContent-Length: " +
-            std::to_string(body.size()) + "\r\n\r\n" + body;
+            std::to_string(routed.body.size()) + "\r\n\r\n" + routed.body;
         ::send(client, response.data(), response.size(), MSG_NOSIGNAL);
         ::close(client);
     }

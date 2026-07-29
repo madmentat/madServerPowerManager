@@ -6,7 +6,7 @@ state_file=/var/lib/mad-server-power-manager/state.json
 secrets_file=/etc/mad-server-power-manager/secrets.ini
 
 [ups]
-nut_host=127.0.0.1
+nut_host=YOUR_NUT_HOST
 nut_port=3493
 nut_name=ups
 on_battery_confirm_seconds=10
@@ -16,22 +16,24 @@ critical_battery_charge=15
 critical_runtime_seconds=600
 use_low_battery_flag=true
 
-[proxmox]
-host=192.168.88.45
+[server]
+host=YOUR_SERVER_HOST
 port=22
 user=mad-power-manager
 private_key=/etc/mad-server-power-manager/id_ed25519
 known_hosts=/etc/mad-server-power-manager/known_hosts
 connect_timeout_seconds=5
+command_timeout_seconds=15
 shutdown_grace_seconds=480
-shutdown_timeout_seconds=360
+shutdown_timeout_seconds=300
+server_off_confirm_seconds=30
 shutdown_retry_seconds=20
 shutdown_max_attempts=5
 force_cut_after_shutdown_timeout=false
 forced_command=poweroff
 
 [plug]
-host=192.168.88.73
+host=YOUR_TUYA_PLUG_HOST
 port=6668
 protocol_version=3.5
 switch_dp=1

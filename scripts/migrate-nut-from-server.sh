@@ -17,7 +17,7 @@ while (($#)); do
 done
 [[ -n "$reference" ]] || { usage; exit 2; }
 
-echo "Референс: $reference"
+echo "Референс исходного сервера: $reference"
 echo "Переносятся только ups.conf и параметры режима; секреты не копируются."
 echo "Целевой драйвер: nutdrv_qx, VID:PID 0001:0000, protocol=hunnox."
 if ! $apply; then

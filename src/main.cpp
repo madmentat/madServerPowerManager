@@ -2,7 +2,7 @@
 #include "madspm/http_api.hpp"
 #include "madspm/manager.hpp"
 #include "madspm/nut_client.hpp"
-#include "madspm/proxmox.hpp"
+#include "madspm/server_client.hpp"
 #include "madspm/state_machine.hpp"
 #include "madspm/state_store.hpp"
 #include "madspm/tuya_client.hpp"
@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
                       << "1. Установите основной конфиг из config/madServerPowerManager.ini.example.\n"
                       << "2. Создайте secrets.ini с правами 0600.\n"
                       << "3. Оставьте armed=false и выполните --doctor.\n"
-                      << "4. SSH-ключ и forced command на Proxmox настраиваются отдельным этапом.\n";
+                      << "4. SSH-ключ и forced command на сервере настраиваются отдельным этапом.\n";
             return 0;
         }
         madspm::PowerManager manager(config);
@@ -114,7 +114,7 @@ int main(int argc, char** argv) {
         }
         if (command == "--test-ssh") {
             std::string error;
-            if (!madspm::ProxmoxClient(config.proxmox).test_ssh(error))
+            if (!madspm::ServerClient(config.server).test_ssh(error))
                 throw std::runtime_error(error);
             std::cout << "Безопасная SSH-команда выполнена\n";
             return 0;

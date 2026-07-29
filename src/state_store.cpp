@@ -10,18 +10,133 @@
 namespace madspm {
 namespace {
 
-std::string extract(const std::string& json, const std::string& key) {
-    const std::string marker = "\"" + key + "\":";
-    auto pos = json.find(marker);
-    if (pos == std::string::npos) return {};
-    pos += marker.size();
-    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) ++pos;
-    if (pos < json.size() && json[pos] == '"') {
-        const auto end = json.find('"', pos + 1);
-        return end == std::string::npos ? std::string{} : json.substr(pos + 1, end - pos - 1);
+unsigned hex_digit(char value) {
+    if (value >= '0' && value <= '9') return static_cast<unsigned>(value - '0');
+    if (value >= 'a' && value <= 'f') return static_cast<unsigned>(value - 'a' + 10);
+    if (value >= 'A' && value <= 'F') return static_cast<unsigned>(value - 'A' + 10);
+    throw std::runtime_error("state-файл содержит некорректную Unicode escape-последовательность");
+}
+
+std::uint32_t unicode_escape(const std::string& json, std::size_t offset) {
+    if (offset + 4 > json.size())
+        throw std::runtime_error("state-файл содержит обрезанную Unicode escape-последовательность");
+    std::uint32_t value = 0;
+    for (std::size_t i = 0; i < 4; ++i)
+        value = (value << 4U) | hex_digit(json[offset + i]);
+    return value;
+}
+
+void append_utf8(std::string& output, std::uint32_t codepoint) {
+    if (codepoint <= 0x7fU) {
+        output.push_back(static_cast<char>(codepoint));
+    } else if (codepoint <= 0x7ffU) {
+        output.push_back(static_cast<char>(0xc0U | (codepoint >> 6U)));
+        output.push_back(static_cast<char>(0x80U | (codepoint & 0x3fU)));
+    } else if (codepoint <= 0xffffU) {
+        output.push_back(static_cast<char>(0xe0U | (codepoint >> 12U)));
+        output.push_back(static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3fU)));
+        output.push_back(static_cast<char>(0x80U | (codepoint & 0x3fU)));
+    } else if (codepoint <= 0x10ffffU) {
+        output.push_back(static_cast<char>(0xf0U | (codepoint >> 18U)));
+        output.push_back(static_cast<char>(0x80U | ((codepoint >> 12U) & 0x3fU)));
+        output.push_back(static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3fU)));
+        output.push_back(static_cast<char>(0x80U | (codepoint & 0x3fU)));
+    } else {
+        throw std::runtime_error("state-файл содержит недопустимый Unicode codepoint");
     }
-    const auto end = json.find_first_of(",}\n", pos);
-    return json.substr(pos, end - pos);
+}
+
+std::string json_string(const std::string& json, std::size_t& position) {
+    if (position >= json.size() || json[position] != '"')
+        throw std::runtime_error("Ожидалась JSON-строка");
+    ++position;
+    std::string result;
+    while (position < json.size()) {
+        const unsigned char current =
+            static_cast<unsigned char>(json[position++]);
+        if (current == '"') return result;
+        if (current < 0x20U)
+            throw std::runtime_error("Неэкранированный управляющий символ в state-файле");
+        if (current != '\\') {
+            result.push_back(static_cast<char>(current));
+            continue;
+        }
+        if (position >= json.size())
+            throw std::runtime_error("Обрезанная escape-последовательность в state-файле");
+        const char escaped = json[position++];
+        switch (escaped) {
+        case '"': result.push_back('"'); break;
+        case '\\': result.push_back('\\'); break;
+        case '/': result.push_back('/'); break;
+        case 'b': result.push_back('\b'); break;
+        case 'f': result.push_back('\f'); break;
+        case 'n': result.push_back('\n'); break;
+        case 'r': result.push_back('\r'); break;
+        case 't': result.push_back('\t'); break;
+        case 'u': {
+            std::uint32_t codepoint = unicode_escape(json, position);
+            position += 4;
+            if (codepoint >= 0xd800U && codepoint <= 0xdbffU) {
+                if (position + 6 > json.size() || json[position] != '\\' ||
+                    json[position + 1] != 'u')
+                    throw std::runtime_error("Обрезанная surrogate pair в state-файле");
+                const std::uint32_t low = unicode_escape(json, position + 2);
+                if (low < 0xdc00U || low > 0xdfffU)
+                    throw std::runtime_error("Некорректная surrogate pair в state-файле");
+                position += 6;
+                codepoint = 0x10000U + ((codepoint - 0xd800U) << 10U) +
+                            (low - 0xdc00U);
+            } else if (codepoint >= 0xdc00U && codepoint <= 0xdfffU) {
+                throw std::runtime_error("Одиночный low surrogate в state-файле");
+            }
+            append_utf8(result, codepoint);
+            break;
+        }
+        default:
+            throw std::runtime_error("Неизвестная escape-последовательность в state-файле");
+        }
+    }
+    throw std::runtime_error("Незакрытая JSON-строка в state-файле");
+}
+
+std::string extract(const std::string& json, const std::string& key) {
+    std::size_t position = 0;
+    while (position < json.size() &&
+           std::isspace(static_cast<unsigned char>(json[position])))
+        ++position;
+    if (position >= json.size() || json[position++] != '{')
+        throw std::runtime_error("state-файл не содержит JSON-объект");
+    for (;;) {
+        while (position < json.size() &&
+               (std::isspace(static_cast<unsigned char>(json[position])) ||
+                json[position] == ','))
+            ++position;
+        if (position >= json.size() || json[position] == '}') return {};
+        const std::string current_key = json_string(json, position);
+        while (position < json.size() &&
+               std::isspace(static_cast<unsigned char>(json[position])))
+            ++position;
+        if (position >= json.size() || json[position++] != ':')
+            throw std::runtime_error("state-файл содержит поле без двоеточия");
+        while (position < json.size() &&
+               std::isspace(static_cast<unsigned char>(json[position])))
+            ++position;
+        std::string value;
+        if (position < json.size() && json[position] == '"') {
+            value = json_string(json, position);
+        } else {
+            const std::size_t begin = position;
+            while (position < json.size() && json[position] != ',' &&
+                   json[position] != '}')
+                ++position;
+            std::size_t end = position;
+            while (end > begin &&
+                   std::isspace(static_cast<unsigned char>(json[end - 1])))
+                --end;
+            value = json.substr(begin, end - begin);
+        }
+        if (current_key == key) return value;
+    }
 }
 
 bool truth(const std::string& value) { return value == "true"; }
@@ -45,11 +160,19 @@ std::string payload_json(const PersistentState& state) {
         << ",\"state\":\"" << to_string(state.state) << '"'
         << ",\"emergency_cycle_id\":\"" << json_escape(state.emergency_cycle_id) << '"'
         << ",\"on_battery_since_utc\":" << state.on_battery_since_utc
+        << ",\"on_battery_detected_since_utc\":"
+        << state.on_battery_detected_since_utc
         << ",\"mains_restored_since_utc\":" << state.mains_restored_since_utc
         << ",\"plug_off_since_utc\":" << state.plug_off_since_utc
         << ",\"shutdown_sent\":" << (state.shutdown_sent ? "true" : "false")
         << ",\"shutdown_attempts\":" << state.shutdown_attempts
+        << ",\"shutdown_sent_utc\":" << state.shutdown_sent_utc
+        << ",\"shutdown_last_attempt_utc\":" << state.shutdown_last_attempt_utc
+        << ",\"server_unreachable_since_utc\":"
+        << state.server_unreachable_since_utc
         << ",\"server_confirmed_off\":" << (state.server_confirmed_off ? "true" : "false")
+        << ",\"plug_last_attempt_utc\":" << state.plug_last_attempt_utc
+        << ",\"plug_attempts\":" << state.plug_attempts
         << ",\"plug_was_cut\":" << (state.plug_was_cut ? "true" : "false")
         << ",\"last_error\":\"" << json_escape(state.last_error) << '"'
         << ",\"last_success_utc\":" << state.last_success_utc;
@@ -70,6 +193,14 @@ PersistentState StateStore::load() const {
     const auto payload_end = json.rfind(",\"checksum\"");
     if (payload_end == std::string::npos || expected.empty())
         throw std::runtime_error("state-файл повреждён: отсутствует checksum");
+    const std::string expected_suffix =
+        ",\"checksum\":\"" + expected + "\"}";
+    if (json.compare(payload_end, expected_suffix.size(), expected_suffix) != 0)
+        throw std::runtime_error("state-файл повреждён: некорректное окончание");
+    for (std::size_t i = payload_end + expected_suffix.size(); i < json.size(); ++i) {
+        if (!std::isspace(static_cast<unsigned char>(json[i])))
+            throw std::runtime_error("state-файл содержит данные после JSON-объекта");
+    }
     const std::string payload = json.substr(1, payload_end - 1);
     if (std::to_string(checksum(payload)) != expected)
         throw std::runtime_error("state-файл повреждён: checksum не совпадает");
@@ -80,11 +211,23 @@ PersistentState StateStore::load() const {
     result.state = *state;
     result.emergency_cycle_id = extract(json, "emergency_cycle_id");
     result.on_battery_since_utc = integer(extract(json, "on_battery_since_utc"));
+    result.on_battery_detected_since_utc =
+        integer(extract(json, "on_battery_detected_since_utc"));
     result.mains_restored_since_utc = integer(extract(json, "mains_restored_since_utc"));
     result.plug_off_since_utc = integer(extract(json, "plug_off_since_utc"));
     result.shutdown_sent = truth(extract(json, "shutdown_sent"));
     result.shutdown_attempts = static_cast<unsigned>(integer(extract(json, "shutdown_attempts")));
+    result.shutdown_sent_utc = integer(extract(json, "shutdown_sent_utc"));
+    result.shutdown_last_attempt_utc = integer(extract(json, "shutdown_last_attempt_utc"));
+    std::string server_unreachable =
+        extract(json, "server_unreachable_since_utc");
+    if (server_unreachable.empty())
+        server_unreachable = extract(json, "proxmox_unreachable_since_utc");
+    result.server_unreachable_since_utc = integer(server_unreachable);
     result.server_confirmed_off = truth(extract(json, "server_confirmed_off"));
+    result.plug_last_attempt_utc = integer(extract(json, "plug_last_attempt_utc"));
+    result.plug_attempts =
+        static_cast<unsigned>(integer(extract(json, "plug_attempts")));
     result.plug_was_cut = truth(extract(json, "plug_was_cut"));
     result.last_error = extract(json, "last_error");
     result.last_success_utc = integer(extract(json, "last_success_utc"));

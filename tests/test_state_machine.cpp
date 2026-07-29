@@ -23,7 +23,7 @@ madspm::Observations online() {
     value.ups.reachable = true;
     value.ups.online = true;
     value.ups.status = "OL";
-    value.proxmox_reachable = true;
+    value.server_reachable = true;
     value.plug_reachable = true;
     value.plug_on = true;
     return value;
@@ -86,12 +86,12 @@ int main() {
            online(), now).next == madspm::State::MainsStabilizing);
     expect("7 daemon restart grace", decide(cfg, madspm::State::OnBatteryGrace,
            battery(), now, now - 300).next == madspm::State::OnBatteryGrace);
-    auto off = battery(); off.plug_on = false; off.proxmox_reachable = false;
+    auto off = battery(); off.plug_on = false; off.server_reachable = false;
     expect("8 NUC restart plug off", decide(cfg, madspm::State::WaitingForMains,
            off, now, now - 600).next == madspm::State::WaitingForMains);
-    auto no_proxmox = online(); no_proxmox.proxmox_reachable = false;
-    expect("9 proxmox unavailable", decide(cfg, madspm::State::MainsOn,
-           no_proxmox, now).action == madspm::Action::None);
+    auto no_server = online(); no_server.server_reachable = false;
+    expect("9 server unavailable", decide(cfg, madspm::State::MainsOn,
+           no_server, now).action == madspm::Action::None);
     auto no_plug = online(); no_plug.plug_reachable = false; no_plug.plug_on.reset();
     expect("10 plug unavailable", decide(cfg, madspm::State::MainsOn,
            no_plug, now).action == madspm::Action::None);
@@ -104,9 +104,62 @@ int main() {
     auto manual_on = battery(); manual_on.plug_on = true;
     expect("14 manual plug on", decide(cfg, madspm::State::WaitingForMains,
            manual_on, now).action == madspm::Action::None);
-    auto responding = battery(); responding.proxmox_reachable = true;
+    auto responding = battery(); responding.server_reachable = true;
     expect("15 shutdown timeout safe", decide(cfg, madspm::State::WaitingServerOff,
            responding, now).action == madspm::Action::None);
+    madspm::PersistentState waiting;
+    waiting.state = madspm::State::WaitingServerOff;
+    waiting.shutdown_sent = true;
+    waiting.shutdown_sent_utc =
+        now - static_cast<std::int64_t>(cfg.server.shutdown_timeout_seconds);
+    expect("15b shutdown timeout degrades without forced cut",
+           madspm::StateMachine(cfg).evaluate(waiting, responding, now).next ==
+               madspm::State::Degraded);
+    madspm::Config force_cut = cfg;
+    force_cut.server.force_cut_after_shutdown_timeout = true;
+    expect("15c explicit forced cut after timeout",
+           madspm::StateMachine(force_cut).evaluate(waiting, responding, now).action ==
+               madspm::Action::PlugOff);
+    auto confirmed = responding;
+    confirmed.server_reachable = false;
+    confirmed.server_confirmed_off = true;
+    expect("15d confirmed server off cuts plug",
+           madspm::StateMachine(cfg).evaluate(waiting, confirmed, now).action ==
+               madspm::Action::PlugOff);
+    madspm::PersistentState tracking;
+    tracking.state = madspm::State::WaitingServerOff;
+    auto offline_after_shutdown = battery();
+    offline_after_shutdown.server_reachable = false;
+    madspm::StateMachine tracker(cfg);
+    tracker.update_server_off_confirmation(
+        tracking, offline_after_shutdown, now);
+    expect("15e no confirmation before shutdown",
+           !offline_after_shutdown.server_confirmed_off &&
+               tracking.server_unreachable_since_utc == 0);
+    tracking.shutdown_sent = true;
+    tracking.shutdown_sent_utc = now;
+    tracker.update_server_off_confirmation(
+        tracking, offline_after_shutdown, now);
+    tracker.update_server_off_confirmation(
+        tracking, offline_after_shutdown,
+        now + static_cast<std::int64_t>(
+                  cfg.server.server_off_confirm_seconds) - 1);
+    expect("15f short network loss is not server off",
+           !offline_after_shutdown.server_confirmed_off);
+    tracker.update_server_off_confirmation(
+        tracking, offline_after_shutdown,
+        now + cfg.server.server_off_confirm_seconds);
+    expect("15g continuous offline window confirms server off",
+           offline_after_shutdown.server_confirmed_off &&
+               tracking.server_confirmed_off);
+    auto reachable_again = offline_after_shutdown;
+    reachable_again.server_reachable = true;
+    tracker.update_server_off_confirmation(
+        tracking, reachable_again,
+        now + cfg.server.server_off_confirm_seconds + 1);
+    expect("15h reachable server clears confirmation",
+           !reachable_again.server_confirmed_off &&
+               tracking.server_unreachable_since_utc == 0);
     expect("16 NUT restart", decide(cfg, madspm::State::OnBatteryGrace,
            no_nut, now, now - 100).next == madspm::State::Degraded);
     expect("17 NUC recovery", decide(cfg, madspm::State::Recovery,
@@ -114,15 +167,39 @@ int main() {
     auto mismatch = online(); mismatch.plug_on = true;
     expect("18 state mismatch", decide(cfg, madspm::State::CuttingServerPower,
            mismatch, now).action == madspm::Action::PlugOff);
-    expect("19 SSH host key handled by strict client", cfg.proxmox.known_hosts.is_absolute());
+    expect("19 SSH host key handled by strict client",
+           cfg.server.known_hosts.is_absolute());
     auto no_charge = battery(); no_charge.ups.battery_charge.reset();
     expect("20 no battery charge", decide(cfg, madspm::State::OnBatteryGrace,
            no_charge, now, now - 10).action == madspm::Action::None);
     auto no_runtime = no_charge; no_runtime.ups.battery_runtime_seconds.reset();
     expect("21 no runtime", decide(cfg, madspm::State::OnBatteryGrace,
            no_runtime, now, now - 10).action == madspm::Action::None);
-    expect("22 flags only", decide(cfg, madspm::State::MainsOn,
-           battery(), now).next == madspm::State::OnBatteryGrace);
+    madspm::PersistentState battery_confirmation;
+    battery_confirmation.state = madspm::State::MainsOn;
+    auto battery_observation = battery();
+    madspm::StateMachine battery_tracker(cfg);
+    battery_tracker.update_on_battery_detection(
+        battery_confirmation, battery_observation, now);
+    expect("22a OB is not accepted immediately",
+           battery_tracker.evaluate(
+               battery_confirmation, battery_observation, now).next ==
+               madspm::State::MainsOn);
+    expect("22b OB remains pending before confirmation threshold",
+           battery_tracker.evaluate(
+               battery_confirmation, battery_observation,
+               now + cfg.ups.on_battery_confirm_seconds - 1).next ==
+               madspm::State::MainsOn);
+    expect("22c sustained OB is confirmed",
+           battery_tracker.evaluate(
+               battery_confirmation, battery_observation,
+               now + cfg.ups.on_battery_confirm_seconds).next ==
+               madspm::State::OnBatteryGrace);
+    auto online_again = online();
+    battery_tracker.update_on_battery_detection(
+        battery_confirmation, online_again, now + 2);
+    expect("22d restored OL clears pending OB timer",
+           battery_confirmation.on_battery_detected_since_utc == 0);
     std::string crypto_error;
     expect("23 Tuya crypto", madspm::tuya::self_test(crypto_error));
     auto ambiguous = online(); ambiguous.ups.online = false; ambiguous.ups.status.clear();
@@ -130,6 +207,22 @@ int main() {
            ambiguous, now).next == madspm::State::Degraded);
     expect("25 brief mains return", decide(cfg, madspm::State::MainsStabilizing,
            battery(), now, 0, now - 3).next == madspm::State::WaitingForMains);
+    madspm::PersistentState plug_retry;
+    plug_retry.state = madspm::State::CuttingServerPower;
+    plug_retry.plug_last_attempt_utc = now;
+    expect("25b plug off waits for retry interval",
+           madspm::StateMachine(cfg).evaluate(
+               plug_retry, battery(), now + cfg.plug.retry_seconds - 1).action ==
+               madspm::Action::None);
+    expect("25c plug off retries after interval",
+           madspm::StateMachine(cfg).evaluate(
+               plug_retry, battery(), now + cfg.plug.retry_seconds).action ==
+               madspm::Action::PlugOff);
+    plug_retry.state = madspm::State::RestoringServerPower;
+    expect("25d plug on also waits for retry interval",
+           madspm::StateMachine(cfg).evaluate(
+               plug_retry, online(), now + cfg.plug.retry_seconds - 1).action ==
+               madspm::Action::None);
 
     madspm::Config unarmed = cfg;
     unarmed.general.armed = false;
@@ -137,6 +230,6 @@ int main() {
            decide(unarmed, madspm::State::ShutdownRequested, low, now,
                   now - 1000).action == madspm::Action::None);
 
-    if (failures == 0) std::cout << "Все сценарии FSM пройдены: 27/27\n";
+    if (failures == 0) std::cout << "Все сценарии FSM пройдены\n";
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }

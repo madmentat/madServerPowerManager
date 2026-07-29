@@ -43,6 +43,7 @@ systemctl daemon-reload
 systemctl enable mad-server-power-manager.service
 
 echo "Установлено в безопасном режиме. Проверь секреты и выполни:"
+echo "  sudo ./scripts/provision-server-ssh.sh SERVER_HOST"
 echo "  mad-server-power-manager --validate-config"
 echo "  mad-server-power-manager --doctor"
 echo "  systemctl start mad-server-power-manager"

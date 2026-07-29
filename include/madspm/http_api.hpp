@@ -7,6 +7,15 @@
 
 namespace madspm {
 
+struct HttpResponse {
+    std::string status;
+    std::string body;
+};
+
+HttpResponse route_http_request(PowerManager& manager,
+                                const std::string& method,
+                                const std::string& path);
+
 class HttpApi {
 public:
     explicit HttpApi(PowerManager& manager);

@@ -19,7 +19,7 @@ public:
     Observations observe();
     std::string status_json() const;
     std::string ups_json() const;
-    std::string proxmox_json() const;
+    std::string server_json() const;
     std::string plug_json() const;
     std::string config_json() const;
     std::string events_json() const;
@@ -28,7 +28,7 @@ public:
     void request_stop();
 
 private:
-    void apply_decision(const Decision& decision, bool dry_run);
+    bool apply_decision(const Decision& decision, bool dry_run);
     void record_event(const std::string& severity,
                       const std::string& component,
                       const std::string& action,

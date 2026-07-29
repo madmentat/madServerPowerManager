@@ -12,6 +12,10 @@ class NutClient {
 public:
     explicit NutClient(UpsConfig config);
     UpsTelemetry read() const;
+    static std::map<std::string, std::string> parse_variables_response(
+        const std::string& response, const std::string& ups_name);
+    static UpsTelemetry telemetry_from_variables(
+        std::map<std::string, std::string> variables);
 
 private:
     UpsConfig config_;
