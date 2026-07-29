@@ -1,66 +1,67 @@
 # madServerPowerManager
 
-Автономный менеджер питания Proxmox на C++20 для отдельного маломощного
-Linux-узла — например, Intel NUC, Raspberry Pi, тонкого клиента, другого мини-ПК
-или одноплатного компьютера.
+An autonomous C++20 power manager for Proxmox, designed to run on a dedicated
+low-power Linux host such as an Intel NUC, Raspberry Pi, thin client, or another
+mini PC or single-board computer.
 
-[English](https://github.com/madmentat/madServerPowerManager/tree/EN) ·
-**Русский** ·
-[Ветка разработки](https://github.com/madmentat/madServerPowerManager/tree/develop)
+**English** ·
+[Русский](https://github.com/madmentat/madServerPowerManager/tree/RU) ·
+[Development branch](https://github.com/madmentat/madServerPowerManager/tree/develop)
 
 > [!IMPORTANT]
-> Проект управляет физическим питанием сервера. По умолчанию и после установки
-> используется `armed=false`: телеметрия, диагностика и API работают, но shutdown
-> и переключение реле заблокированы.
+> This project can control the physical power of a server. Every installation
+> starts with `armed=false`: telemetry, diagnostics, and the API remain
+> available, while shutdown and relay switching are blocked.
 
-## Состояние проекта
+## Project status
 
-Версия: `1.0.0`.
+Version: `1.0.0`.
 
-Текущая стадия — рабочий билд. На реальном Intel NUC проверены сборка, NUT,
-локальное чтение Tuya 3.5, HTTP API, восстановление после рестарта и 27
-инвариантов машины состояний. Полный аварийный цикл с shutdown Proxmox,
-отключением и восстановлением розетки пройден успешно 28 июля 2026.
+The current release is a working build. Compilation,
+NUT telemetry, local Tuya 3.5 reads, the HTTP API, restart recovery, and 27 state
+machine invariants have been verified on a real Intel NUC. A complete emergency
+cycle involving Proxmox shutdown, smart plug cut-off, and power restoration
+was successfully completed on July 28, 2026.
 
-## Задача
+## Problem statement
 
-Если внешнее питание пропало ненадолго, Proxmox должен продолжить работу. Если
-генератор не запустился за заданный grace period, сервер необходимо штатно
-выключить, подтвердить завершение работы и только затем снять с него питание.
-После устойчивого восстановления сети розетка включается, а BIOS запускает
-сервер по событию AC Restore.
+A short mains outage should not stop the Proxmox host. If the generator does not
+start within the configured grace period, the server must shut down cleanly.
+Power may be removed only after shutdown has been confirmed. When mains power is
+stable again, the smart plug is enabled and the server starts through its BIOS
+AC Restore setting.
 
-Менеджер работает на отдельном NUC, который остаётся включённым вместе с ИБП и
-сетевым оборудованием. Поэтому отключается только основной сервер, а не весь
-выход ИБП.
+The manager runs on a separate NUC that remains powered together with the UPS and
+network equipment. This makes it possible to remove power from the main server
+without turning off the entire UPS output.
 
 ```text
-ИБП ──USB──► NUT ───────────────┐
-                                │
-                           Intel NUC
-                                │
-                    madServerPowerManager
-                     ├── FSM и state.json
-                     ├── SSH ───────────► Proxmox
-                     ├── Tuya 3.5 ──────► Wi-Fi-розетка
-                     └── HTTP JSON API ─► локальный мониторинг
+UPS ──USB──► NUT ─────────────────┐
+                                  │
+                              Intel NUC
+                                  │
+                      madServerPowerManager
+                       ├── FSM and state.json
+                       ├── SSH ───────────► Proxmox
+                       ├── Tuya 3.5 ──────► Wi-Fi smart plug
+                       └── HTTP JSON API ─► local monitoring
 ```
 
-## Возможности
+## Features
 
-- локальный опрос ИБП через Network UPS Tools;
-- нативный клиент Tuya 3.5 без Python, TinyTuya и облачного API;
-- HMAC-SHA256, SHA-256, AES-128 и AES-GCM для локального протокола Tuya;
-- штатный shutdown Proxmox через системный OpenSSH;
-- конечная машина состояний с фильтрацией кратких пропаданий сети;
-- продолжение незавершённого аварийного цикла после рестарта;
-- атомарная запись состояния: временный файл, `fsync`, `rename`;
-- локальный read-only HTTP JSON API;
-- отдельные CLI-команды диагностики и симуляции;
-- systemd-unit с hardening-параметрами;
-- fail-safe поведение: неоднозначность блокирует силовое действие.
+- local UPS telemetry through Network UPS Tools;
+- native Tuya 3.5 client with no Python, TinyTuya, or cloud API dependency;
+- HMAC-SHA256, SHA-256, AES-128, and AES-GCM for the local Tuya protocol;
+- graceful Proxmox shutdown through the system OpenSSH client;
+- finite-state machine with short-outage filtering;
+- persistent recovery of an unfinished emergency cycle after restart;
+- atomic state writes using a temporary file, `fsync`, and `rename`;
+- local read-only HTTP JSON API;
+- dedicated diagnostics and simulation commands;
+- hardened systemd service;
+- fail-safe behavior: ambiguous input blocks physical power actions.
 
-## Машина состояний
+## State machine
 
 ```text
 STARTING
@@ -92,27 +93,27 @@ STARTING
                       RECOVERY
 ```
 
-Ошибочная конфигурация приводит в `ERROR`. Ненадёжная телеметрия или
-невозможность принять безопасное решение — в `DEGRADED`. В обоих состояниях
-автоматическое управление питанием заблокировано.
+Invalid required configuration leads to `ERROR`. Unreliable telemetry or an
+inability to make a safe decision leads to `DEGRADED`. Automatic power control
+is disabled in both states.
 
-## Требования
+## Requirements
 
 - Linux;
-- CMake 3.20 или новее;
-- компилятор с поддержкой C++20;
-- потоки POSIX;
-- системный OpenSSH-клиент;
-- работающий NUT-сервер;
-- локальный сетевой доступ к Proxmox и Tuya-розетке.
+- CMake 3.20 or newer;
+- a compiler with C++20 support;
+- POSIX threads;
+- the system OpenSSH client;
+- a working NUT server;
+- local network access to Proxmox and the Tuya smart plug.
 
-Python, pip, TinyTuya, Tuya Cloud и доступ в интернет во время работы не
-требуются.
+Python, pip, TinyTuya, Tuya Cloud, and internet access are not required at
+runtime.
 
-## Сборка и тестирование
+## Build and test
 
 ```bash
-git clone --branch RU https://github.com/madmentat/madServerPowerManager.git
+git clone --branch EN https://github.com/madmentat/madServerPowerManager.git
 cd madServerPowerManager
 
 cmake -S . -B build \
@@ -122,15 +123,15 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-Цели сборки:
+Build targets:
 
-- `mad-server-power-manager` — основной демон и CLI;
-- `plugctl` — отдельный диагностический инструмент Tuya;
-- `madspm-tests` — тесты FSM при `BUILD_TESTING=ON`.
+- `mad-server-power-manager` — the main daemon and CLI;
+- `plugctl` — a standalone Tuya diagnostics tool;
+- `madspm-tests` — FSM tests when `BUILD_TESTING=ON`.
 
-## Конфигурация
+## Configuration
 
-Основная конфигурация не должна содержать секретов:
+The main configuration must not contain secrets:
 
 ```ini
 [general]
@@ -171,7 +172,7 @@ port=9187
 allow_control=false
 ```
 
-Секреты хранятся в отдельном файле:
+Secrets are stored in a separate file:
 
 ```ini
 [tuya]
@@ -187,11 +188,11 @@ sudo chown madspm:madspm /etc/mad-server-power-manager/secrets.ini
 sudo chmod 600 /etc/mad-server-power-manager/secrets.ini
 ```
 
-Безопасные шаблоны лежат в [`config/`](config/).
+Safe templates are available in [`config/`](config/).
 
-## Безопасная проверка
+## Safe validation
 
-Держите `armed=false` на всех этапах начальной проверки:
+Keep `armed=false` during every initial check:
 
 ```bash
 ./build/mad-server-power-manager --config dev.ini --validate-config
@@ -201,10 +202,10 @@ sudo chmod 600 /etc/mad-server-power-manager/secrets.ini
 ./build/mad-server-power-manager --config dev.ini --dry-run
 ```
 
-`--test-plug` читает DPS и не переключает реле. `--dry-run` и `--doctor` не
-отправляют команды питания при `armed=false`.
+`--test-plug` reads DPS without switching the relay. `--dry-run` and `--doctor`
+do not issue power commands while `armed=false`.
 
-## Установка
+## Installation
 
 ```bash
 sudo ./scripts/install.sh
@@ -215,7 +216,7 @@ sudo mad-server-power-manager --doctor
 sudo systemctl enable --now mad-server-power-manager
 ```
 
-Проверка сервиса:
+Service checks:
 
 ```bash
 systemctl status mad-server-power-manager
@@ -223,18 +224,18 @@ journalctl -u mad-server-power-manager -f
 curl http://127.0.0.1:9187/api/v1/health
 ```
 
-Удаление:
+Uninstall:
 
 ```bash
 sudo ./scripts/uninstall.sh
 ```
 
-Перед запуском `scripts/migrate-nut-from-proxmox.sh` ознакомьтесь с его
-содержимым и сделайте резервную копию активной конфигурации NUT.
+Review [`scripts/migrate-nut-from-proxmox.sh`](scripts/migrate-nut-from-proxmox.sh)
+and back up the active NUT configuration before running the migration helper.
 
 ## CLI
 
-```
+```text
 --help
 --version
 --init
@@ -252,65 +253,65 @@ sudo ./scripts/uninstall.sh
 --reset-state --yes
 ```
 
-Симуляции проверяют переходы FSM без реального отключения питания, но не
-заменяют контролируемое физическое испытание.
+Simulations verify FSM transitions without a power outage, but they do not
+replace a controlled physical test.
 
 ## HTTP API
 
-По умолчанию API слушает на `127.0.0.1:9187`.
+The API listens on `127.0.0.1:9187` by default.
 
-| Метод | Endpoint | Назначение |
-|-------|----------|------------|
-| GET | `/api/v1/status` | Сводный статус |
-| GET | `/api/v1/ups` | Телеметрия ИБП |
-| GET | `/api/v1/proxmox` | Доступность Proxmox |
-| GET | `/api/v1/plug` | Состояние розетки |
-| GET | `/api/v1/events` | Последние события |
-| GET | `/api/v1/health` | Health check |
-| GET | `/api/v1/config` | Санитизированная конфигурация |
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/v1/status` | Aggregate status |
+| `GET /api/v1/ups` | UPS telemetry |
+| `GET /api/v1/proxmox` | Proxmox reachability |
+| `GET /api/v1/plug` | Smart plug state |
+| `GET /api/v1/events` | Recent events |
+| `GET /api/v1/health` | Health check |
+| `GET /api/v1/config` | Sanitized configuration |
 
-Любой метод кроме `GET` возвращает `405`. Версия `1.0.0` не предоставляет
-управляющего API, даже если `allow_control` случайно включён.
+Every method except `GET` returns `405`. Version 1.0.0 does not expose a control
+API, even if `allow_control` is accidentally enabled.
 
-## Модель безопасности
+## Security model
 
-- `armed=false` — безопасное значение по умолчанию;
-- демон никогда не включает `armed` самостоятельно;
-- секреты отделены от основной конфигурации;
-- SSH использует отдельный ключ, `known_hosts` и `PasswordAuthentication=no`;
-- на Proxmox желательно выделить отдельного пользователя с forced command;
-- один закрытый порт SSH не считается доказательством выключения сервера;
-- `force_cut_after_shutdown_timeout=false` предотвращает слепое снятие питания;
-- API доступен только на loopback и только на чтение;
-- systemd-сервис работает от непривилегированного пользователя.
+- `armed=false` is the safe default;
+- the daemon never enables `armed` automatically;
+- secrets are separated from the main configuration;
+- SSH uses a dedicated key, `known_hosts`, and `PasswordAuthentication=no`;
+- Proxmox should use a dedicated account with a forced command;
+- a closed SSH port alone is not proof that the server is off;
+- `force_cut_after_shutdown_timeout=false` prevents blind power removal;
+- the API is loopback-only and read-only;
+- the systemd service runs as an unprivileged user.
 
-Никогда не коммитьте реальные Local Key, Device ID, API-токен, SSH-ключ,
-рабочую конфигурацию и state-файл.
+Never commit a real Local Key, Device ID, API token, private SSH key, runtime
+configuration, or state file.
 
-## Чек-лист развёртывания
+## Deployment checklist
 
-1. Проверить телеметрию NUT (только чтение).
-2. Запустить демон с `armed=false`.
-3. Проверить SSH безвредной командой.
-4. Протестировать розетку без подключенного сервера.
-5. Симулировать OB и OL.
-6. Сделать резервную копию всей активной конфигурации.
-7. Провести контролируемое физическое испытание.
-8. Только после этого вручную выставить `armed=true`.
+1. Validate read-only NUT telemetry.
+2. Start the daemon with `armed=false`.
+3. Verify SSH with a harmless command.
+4. Test the smart plug without the server connected.
+5. Simulate `OB` and `OL`.
+6. Back up all active configuration.
+7. Perform a controlled on-site power test.
+8. Only then set `armed=true` manually.
 
-## Структура репозитория
+## Repository layout
 
+```text
+include/madspm/   public C++ interfaces
+src/              daemon, FSM, NUT, SSH, Tuya, and API implementation
+tests/            state-machine tests
+config/           safe configuration templates
+systemd/          service unit
+scripts/          install, uninstall, and NUT migration helpers
+docs/             architecture, API, operations, and reports
 ```
-include/madspm/   публичные C++-интерфейсы
-src/              демон, FSM, NUT, SSH, Tuya и реализация API
-tests/            тесты машины состояний
-config/           безопасные шаблоны конфигурации
-systemd/          systemd-юнит
-scripts/          скрипты установки, удаления и миграции NUT
-docs/             архитектура, API, эксплуатация, отчёты
-```
 
-Ключевые документы:
+Key documents:
 
 - [`docs/STATE_MACHINE.md`](docs/STATE_MACHINE.md);
 - [`docs/STATE_FILE.md`](docs/STATE_FILE.md);
@@ -318,25 +319,25 @@ docs/             архитектура, API, эксплуатация, отч�
 - [`docs/OPERATIONS_RU.md`](docs/OPERATIONS_RU.md);
 - [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md).
 
-## Ветки
+## Branches
 
-- **EN** — стабильная ветка и английский README;
-- **RU** — тот же код с русским README;
-- **develop** — активная разработка, русский README.
+- `EN` — stable branch and English README;
+- `RU` — the same code with a Russian README;
+- `develop` — active development with a Russian README.
 
-## Известные ограничения
+## Known limitations
 
-- production SSH forced command ещё не введена в строй;
-- Proxmox ещё не переведён в NUT netclient;
-- ИБП не сообщает `battery.runtime`;
-- HTTP API поддерживает только IPv4 и локальный мониторинг;
-- полный физический аварийный цикл пройден 28 июля 2026;
-- установленную на тестовом NUC EOL-версию Ubuntu необходимо обновить отдельным
-  контролируемым этапом.
+- the production SSH forced command has not been commissioned yet;
+- Proxmox has not been migrated to NUT netclient mode;
+- the UPS does not provide `battery.runtime`;
+- the HTTP API is IPv4-only and intended for local monitoring;
+- the complete physical emergency cycle was successfully tested on July 28, 2026;
+- the EOL Ubuntu release on the test NUC must be upgraded as a separate,
+  controlled operation.
 
-Подробности — в [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md).
+See [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md) for details.
 
-## Лицензия
+## License
 
-Файл лицензии пока не добавлен. До выбора лицензии все права сохранены за
-автором проекта.
+No license file has been added yet. Until a license is selected, all rights are
+reserved by the project author.
